@@ -1,0 +1,52 @@
+# ea_params.yaml — SMC/ICT Structure EA
+# Tham số default cho PortfolioEA_SMC.ex5
+
+# --- EA Identity ---
+ea_file:      "Experts/PortfolioEA_SMC.ex5"
+magic_base:   20260501
+magic_offset: 200   # magic = magic_base + magic_offset + symbol_suffix
+
+# --- Timeframes ---
+timeframes:
+  tf1: "H4"    # Bias / BOS detection
+  tf2: "H1"    # Order Block / FVG zone
+  tf3: "M15"   # Entry trigger
+
+# --- Strategy parameters (default, sẽ override sau optimization) ---
+strategy_params:
+  SwingLookback:   10
+  OB_MinBodyPct:   0.6
+  FVG_MinGapATR:   0.3
+  SweepATRBuffer:  0.1
+  OB_MaxAgeBars:   50
+  SL_OB_Buffer:    0.1
+  TP_RR:           2.5
+  SignalExpiryBars: 6
+
+# --- Risk (inherit từ configs/risk.yaml, override nếu cần) ---
+risk:
+  base_risk_pct:  0.10   # research_demo tier (giảm từ default 0.25%)
+  kelly_enabled:  false  # tắt Kelly trong giai đoạn research
+
+# --- Per-symbol spread limits (points) ---
+spread_limits:
+  EURUSD: 20
+  GBPUSD: 30
+
+# --- Session filter ---
+sessions:
+  - London    # 07:00–16:00 UTC
+  - NewYork   # 12:00–21:00 UTC
+
+# --- Filters ---
+filters:
+  min_rr:           2.0    # reject nếu actual R:R < 2.0 tại entry
+  max_spread_pct:   0.05   # reject nếu spread > 5% của SL distance
+  require_fvg:      true   # OB phải đi kèm FVG để entry
+  require_bos:      true   # BOS phải xác nhận trước khi tìm OB
+
+# --- Logging ---
+logging:
+  decision_log: true
+  trade_log:    true
+  log_file:     "ATS_v4/SMC_decision_log.csv"

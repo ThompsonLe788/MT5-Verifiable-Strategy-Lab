@@ -1,0 +1,76 @@
+# optimization_space.yaml — SMC/ICT Structure
+
+objective: "sharpe_penalized"
+# sharpe_penalized = Sharpe * (1 - DD/0.15) * log10(max(trades, 1))
+
+reject_trial_if:
+  total_trades_lt:  200
+  profit_factor_lt: 1.15
+  max_dd_gt:        0.15
+  sharpe_lt:        0.5
+  expectancy_lte:   0.0
+
+parameters:
+  - name: "SwingLookback"
+    type: "int"
+    min: 5
+    max: 20
+    step: 5
+
+  - name: "OB_MinBodyPct"
+    type: "float"
+    min: 0.4
+    max: 0.8
+    step: 0.1
+
+  - name: "FVG_MinGapATR"
+    type: "float"
+    min: 0.1
+    max: 0.8
+    step: 0.1
+
+  - name: "SweepATRBuffer"
+    type: "float"
+    min: 0.05
+    max: 0.30
+    step: 0.05
+
+  - name: "OB_MaxAgeBars"
+    type: "int"
+    min: 20
+    max: 100
+    step: 20
+
+  - name: "SL_OB_Buffer"
+    type: "float"
+    min: 0.05
+    max: 0.30
+    step: 0.05
+
+  - name: "TP_RR"
+    type: "float"
+    min: 1.5
+    max: 4.0
+    step: 0.5
+
+  - name: "SignalExpiryBars"
+    type: "int"
+    min: 3
+    max: 12
+    step: 3
+
+walk_forward:
+  train_months: 12
+  test_months:  3
+  min_folds:    4
+  oos_pass_ratio: 0.5
+
+stability:
+  method: "plateau"
+  plateau_tolerance_pct: 10
+  cluster_n: 5
+
+output:
+  best_params_file: "best_params.json"
+  report_file:      "optimization_report.md"
+  include_timestamp_in_best_params: true

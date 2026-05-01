@@ -484,8 +484,10 @@ def check_Q_regime(trade_log_path: str | None,
 
 HARD_FAIL_RULES = [
     ("SL bắt buộc trước entry",
-     lambda s, _: not _file_contains(
-         _strategy_dir(s) / "rule_spec.md", "sl", "stop loss")),
+     lambda s, _: not (
+         _file_contains(_strategy_dir(s) / "rule_spec.md", "sl")
+         or _file_contains(_strategy_dir(s) / "rule_spec.md", "stop loss")
+     )),
     ("Không có trade_log",
      lambda _, tl: tl is not None and not Path(tl).exists()),
     ("Không có OOS / Walk-forward",
