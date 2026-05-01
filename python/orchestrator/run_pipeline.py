@@ -26,14 +26,20 @@ from build.mql5_compiler import MQL5Compiler
 from backtest.tester_runner import MT5TesterRunner
 from backtest.trade_log_parser import parse_trade_log, validate_sample_size
 
+_LOG_DIR = PROJECT_ROOT / "logs"
+_LOG_DIR.mkdir(exist_ok=True)
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
     handlers=[
-        logging.StreamHandler(),
-        logging.FileHandler("logs/pipeline.log"),
+        logging.StreamHandler(sys.stdout),
+        logging.FileHandler(_LOG_DIR / "pipeline.log", encoding="utf-8"),
     ]
 )
+# Đảm bảo stdout dùng UTF-8 (quan trọng trên Windows)
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 log = logging.getLogger(__name__)
 
 
@@ -45,7 +51,7 @@ def load_configs() -> dict:
     cfg = {}
     config_dir = PROJECT_ROOT / "configs"
     for name in ["mt5_paths", "symbols", "risk", "strategies", "optimization"]:
-        with open(config_dir / f"{name}.yaml") as f:
+        with open(config_dir / f"{name}.yaml", encoding="utf-8") as f:
             cfg[name] = yaml.safe_load(f)
     return cfg
 
@@ -91,11 +97,35 @@ def preflight_check(cfg: dict, strategy_name: str, symbol: str) -> list[str]:
 
     mt5_exe = Path(cfg["mt5_paths"]["terminal_exe"])
     if not mt5_exe.exists():
-        errors.append(f"terminal64.exe không tìm thấy: {mt5_exe}")
+        errors.append(f"[MT5] terminal64.exe không tìm thấy: {mt5_exe}")
 
     me_exe = Path(cfg["mt5_paths"]["metaeditor_exe"])
     if not me_exe.exists():
-        errors.append(f"metaeditor64.exe không tìm thấy: {me_exe}")
+        errors.append(f"[MT5] metaeditor64.exe không tìm thấy: {me_exe}")
+
+    return errors
+
+
+def preflight_check_dryrun(cfg: dict, strategy_name: str, symbol: str) -> list[str]:
+    """Dry-run preflight: chỉ kiểm tra config và spec files, không check MT5 exe."""
+    errors = []
+    strat = cfg["strategies"]["strategies"].get(strategy_name)
+
+    if strat is None:
+        errors.append(f"Strategy '{strategy_name}' không tồn tại trong strategies.yaml")
+        return errors
+
+    if symbol not in strat.get("symbols", []):
+        errors.append(f"Symbol '{symbol}' không nằm trong danh sách của strategy '{strategy_name}'")
+
+    folder = PROJECT_ROOT / strat["folder"]
+    required_files = [
+        "hypothesis.md", "rule_spec.md",
+        "indicator_spec.md", "ea_params.yaml", "optimization_space.yaml"
+    ]
+    for f in required_files:
+        if not (folder / f).exists():
+            errors.append(f"Thiếu file bắt buộc: {strat['folder']}/{f}")
 
     return errors
 
@@ -132,7 +162,7 @@ def step_02_compile_indicators(state: PipelineState, cfg: dict, strategy_name: s
 
     compiler = MQL5Compiler(
         metaeditor_exe=cfg["mt5_paths"]["metaeditor_exe"],
-        log_dir=cfg["mt5_paths"]["compile_log_dir"]
+        log_dir=str(PROJECT_ROOT / cfg["mt5_paths"]["compile_log_dir"]),
     )
 
     for ind_file in strat.get("indicator_files", []):
@@ -159,7 +189,7 @@ def step_03_compile_ea(state: PipelineState, cfg: dict, strategy_name: str) -> b
 
     compiler = MQL5Compiler(
         metaeditor_exe=cfg["mt5_paths"]["metaeditor_exe"],
-        log_dir=cfg["mt5_paths"]["compile_log_dir"]
+        log_dir=str(PROJECT_ROOT / cfg["mt5_paths"]["compile_log_dir"]),
     )
     result = compiler.compile(ea_mq5)
 
@@ -184,7 +214,7 @@ def step_04_run_backtest_is(
     strat      = cfg["strategies"]["strategies"][strategy_name]
     sym_cfg    = cfg["symbols"]["symbols"][symbol]
 
-    with open(PROJECT_ROOT / strat["folder"] / "ea_params.yaml") as f:
+    with open(PROJECT_ROOT / strat["folder"] / "ea_params.yaml", encoding="utf-8") as f:
         ea_params = yaml.safe_load(f)
 
     tf3 = ea_params.get("timeframes", {}).get("tf3", "M15")
@@ -206,7 +236,12 @@ def step_04_run_backtest_is(
         }
     }
 
-    runner = MT5TesterRunner(cfg["mt5_paths"])
+    mt5_paths_resolved = {
+        **cfg["mt5_paths"],
+        "tester_ini_dir":    str(PROJECT_ROOT / cfg["mt5_paths"]["tester_ini_dir"]),
+        "tester_report_dir": str(PROJECT_ROOT / cfg["mt5_paths"]["tester_report_dir"]),
+    }
+    runner = MT5TesterRunner(mt5_paths_resolved)
     result = runner.run_backtest(backtest_config)
 
     if result["status"] != "OK":
@@ -324,7 +359,12 @@ def step_07_run_walk_forward(
 
     strat   = cfg["strategies"]["strategies"][strategy_name]
     wf_cfg  = cfg["optimization"]["walk_forward"]
-    runner  = MT5TesterRunner(cfg["mt5_paths"])
+    mt5_paths_resolved = {
+        **cfg["mt5_paths"],
+        "tester_ini_dir":    str(PROJECT_ROOT / cfg["mt5_paths"]["tester_ini_dir"]),
+        "tester_report_dir": str(PROJECT_ROOT / cfg["mt5_paths"]["tester_report_dir"]),
+    }
+    runner  = MT5TesterRunner(mt5_paths_resolved)
 
     folds = generate_wf_folds(
         start=date(2020, 1, 1),
@@ -338,7 +378,7 @@ def step_07_run_walk_forward(
         return False
 
     sym_cfg = cfg["symbols"]["symbols"][symbol]
-    with open(PROJECT_ROOT / strat["folder"] / "ea_params.yaml") as f:
+    with open(PROJECT_ROOT / strat["folder"] / "ea_params.yaml", encoding="utf-8") as f:
         ea_params = yaml.safe_load(f)
 
     from backtest.tester_runner import PERIOD_MAP
@@ -472,7 +512,22 @@ def run(strategy_name: str, symbol: str, from_step: int = 1, dry_run: bool = Fal
 
     cfg = load_configs()
 
-    # Pre-flight
+    # Dry-run: chỉ kiểm tra config + spec files, không cần MT5 cài sẵn
+    if dry_run:
+        errors = preflight_check_dryrun(cfg, strategy_name, symbol)
+        if errors:
+            for e in errors:
+                log.error(f"[DRY-RUN PRE-FLIGHT] {e}")
+            sys.exit(1)
+        log.info("[DRY RUN] Pre-flight OK — configs + spec files hợp lệ.")
+        log.info(f"  Strategy : {strategy_name}")
+        log.info(f"  Symbol   : {symbol}")
+        log.info(f"  Folder   : {cfg['strategies']['strategies'][strategy_name]['folder']}")
+        log.info(f"  EA file  : {cfg['strategies']['strategies'][strategy_name]['ea_file']}")
+        log.info("[DRY RUN] Không chạy thực tế. Exit.")
+        return
+
+    # Full run pre-flight (kiểm tra cả MT5 exe)
     errors = preflight_check(cfg, strategy_name, symbol)
     if errors:
         for e in errors:
@@ -484,10 +539,6 @@ def run(strategy_name: str, symbol: str, from_step: int = 1, dry_run: bool = Fal
     state = PipelineState.load(state_path) if state_path.exists() else PipelineState(
         strategy=strategy_name, symbol=symbol, path=state_path
     )
-
-    if dry_run:
-        log.info("[DRY RUN] Pre-flight OK. Không chạy thực tế.")
-        return
 
     # Chạy từng bước
     for step_num in sorted(STEPS.keys()):
