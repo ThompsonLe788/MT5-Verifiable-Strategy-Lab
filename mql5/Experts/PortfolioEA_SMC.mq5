@@ -1,13 +1,24 @@
 //+------------------------------------------------------------------+
 //|  PortfolioEA_SMC.mq5                                             |
-//|  SMC/ICT Structure EA — BOS + Order Block + FVG entry            |
-//|  Architecture: SOLID — EA orchestrates, delegates to modules.    |
+//|  SMC/ICT — BOS → Sweep → OB+FVG retest trong Discount Zone      |
+//|                                                                  |
+//|  Entry logic (khác Wyckoff hoàn toàn):                          |
+//|  1. H4 BOS_UP xác nhận BULL bias                                |
+//|  2. H1 Liquidity Sweep (equal highs bị sweep, close quay lại)   |
+//|  3. H1 OB + FVG zone xác định                                   |
+//|  4. Bid phải trong Discount Zone (< 50% của impulse)            |
+//|  5. M15 trigger: bullish engulf/pin bar trong OB zone           |
+//|                                                                  |
+//|  Exit logic (đặc thù SMC):                                      |
+//|  - Partial close 50% tại 1R, SL → Breakeven                    |
+//|  - Exit full khi CHoCH_DOWN trên H1 (buffer 0 == -1.0)         |
+//|  - Exit full khi OB violated (close H1 < ob_low)                |
+//|  - Không dùng TF1 bias flip để exit (quá chậm)                 |
 //+------------------------------------------------------------------+
 #property copyright "MT5 Quant Lab"
 #property version   "1.10"
 #property strict
 
-#include <core/IStrategy.mqh>
 #include <core/RiskManager.mqh>
 #include <core/TradeManager.mqh>
 #include <core/Logger.mqh>
@@ -15,285 +26,465 @@
 #include <ui/ChartSetup.mqh>
 #include <ui/AlertManager.mqh>
 
-//=== Input Groups ===================================================
+//=== Inputs =========================================================
 
-//--- General
-input group  "=== General ==="
-input bool   InpEnableTrading   = true;
-input int    InpMagicNumber     = 20260701;  // magic_base + offset + symbol_suffix
-input string InpStrategyName    = "SMC_ICT";
-input string InpVersion         = "1.10";
+input group "=== General ==="
+input bool   InpEnableTrading    = true;
+input int    InpMagicNumber      = 20260702;
+input string InpStrategyName     = "SMC_ICT";
+input string InpVersion          = "1.10";
 
-//--- Timeframes
-input group  "=== Timeframes ==="
-input ENUM_TIMEFRAMES InpTF1    = PERIOD_H4;   // Bias / BOS
-input ENUM_TIMEFRAMES InpTF2    = PERIOD_H1;   // Order Block / FVG
-input ENUM_TIMEFRAMES InpTF3    = PERIOD_M15;  // Entry trigger
+input group "=== Timeframes ==="
+input ENUM_TIMEFRAMES InpTF1     = PERIOD_H4;
+input ENUM_TIMEFRAMES InpTF2     = PERIOD_H1;
+input ENUM_TIMEFRAMES InpTF3     = PERIOD_M15;
 
-//--- Strategy parameters
-input group  "=== SMC Parameters ==="
-input int    InpSwingLookback   = 10;
-input double InpOB_MinBodyPct   = 0.6;
-input double InpFVG_MinGapATR   = 0.3;
-input double InpSweepBuffer     = 0.1;
-input int    InpOB_MaxAgeBars   = 50;
-input double InpSL_OB_Buffer    = 0.1;
-input double InpTP_RR           = 2.5;
-input int    InpSignalExpiryBars= 6;
-input bool   InpRequireFVG      = true;   // OB harus diikuti FVG
+input group "=== SMC Parameters ==="
+input int    InpSwingLookback    = 10;
+input double InpOB_MinBodyPct    = 0.6;
+input double InpFVG_MinGapATR    = 0.3;
+input double InpEqualHL_ATRTol   = 0.1;   // tolerance để detect equal highs
+input double InpSweepATRBuffer   = 0.1;   // giá sweep qua equal highs ít nhất N×ATR
+input int    InpOB_MaxAgeBars    = 50;
+input double InpSL_OB_Buffer     = 0.1;
+input double InpTP_RR            = 2.5;
+input double InpPartialClose_R   = 1.0;   // đóng 50% khi đạt N×R
+input int    InpSignalExpiryBars = 6;     // M15 bars trước khi awaiting_entry timeout
 
-//--- Risk
-input group  "=== Risk ==="
-input double InpBaseRiskPct     = 0.10;   // Research demo tier
-input double InpKellyFraction   = 0.0;    // 0 = Kelly disabled
-input double InpMaxSpreadPoints = 20;     // Max spread in points (EURUSD)
+input group "=== Risk ==="
+input double InpBaseRiskPct      = 0.10;
+input double InpMaxSpreadPoints  = 20;
 
-//--- UI
-input group  "=== UI ==="
-input bool   InpShowDashboard   = true;
-input bool   InpShowIndicator   = true;
+input group "=== UI ==="
+input bool   InpShowDashboard    = true;
 
-//=== Global objects =================================================
+//=== Constants ======================================================
+#define CHOCH_DOWN  -1.0
+#define BOS_UP       2.0
 
-CRiskManager   g_risk;
-CTradeManager  g_trade;
-CLogger        g_logger;
-CDashboard     g_dash;
-CChartSetup    g_chart;
-CAlertManager  g_alert;
+//=== Objects ========================================================
+CRiskManager  g_risk;
+CTradeManager g_trade;
+CLogger       g_logger;
+CDashboard    g_dash;
+CChartSetup   g_chart;
 
-//--- Indicator handles
-int g_ind_tf1 = INVALID_HANDLE;  // SMC_Structure_Indicator on H4
-int g_ind_tf2 = INVALID_HANDLE;  // SMC_Structure_Indicator on H1
-int g_ind_tf3 = INVALID_HANDLE;  // SMC_Structure_Indicator on M15 (entry)
+//--- Indicator handles (SMC_Structure_Indicator trên TF1, TF2)
+int g_ind_tf1 = INVALID_HANDLE;
+int g_ind_tf2 = INVALID_HANDLE;
 
-//--- Buffers: BOS_Direction(0), OB_High(1), OB_Low(2), FVG_High(3), FVG_Low(4)
-double g_bos_tf1[], g_ob_high_tf2[], g_ob_low_tf2[], g_fvg_hi[], g_fvg_lo[];
-double g_bos_tf3[];
+//--- Indicator buffers
+double g_str_tf1[];   // Structure_Signal trên H4
+double g_str_tf2[];   // Structure_Signal trên H1
+double g_ob_hi[];     // OB_High trên H1
+double g_ob_lo[];     // OB_Low  trên H1
+double g_fvg_hi[];    // FVG_High trên H1
+double g_fvg_lo[];    // FVG_Low  trên H1
 
-datetime g_last_bar_tf3 = 0;
+//--- State machine
+bool     g_awaiting_entry  = false;
+int      g_signal_bars_left= 0;
+bool     g_partial_done    = false;
+double   g_entry_price     = 0;
+double   g_sl_price        = 0;
+double   g_tp_price        = 0;
+double   g_ob_lo_at_entry  = 0;
+double   g_swing_lo_after_entry = 0;  // theo dõi CHoCH: LL dưới mức này = CHoCH
+
+datetime g_last_bar_tf2    = 0;
+datetime g_last_bar_tf3    = 0;
 
 //+------------------------------------------------------------------+
 int OnInit()
 {
-   //--- Validate
-   if(InpBaseRiskPct <= 0 || InpBaseRiskPct > 2.0) { Alert("BaseRiskPct invalid"); return(INIT_PARAMETERS_INCORRECT); }
-   if(InpTP_RR < 1.0)                              { Alert("TP_RR < 1.0");        return(INIT_PARAMETERS_INCORRECT); }
+   if(InpBaseRiskPct <= 0 || InpTP_RR < 1.0)
+      return INIT_PARAMETERS_INCORRECT;
 
-   //--- Chart
    g_chart.Setup(InpTF1, InpTF2, InpTF3);
-
-   //--- Logger
-   if(!g_logger.Init(InpMagicNumber, InpStrategyName))
-      Print("Logger init warning — CSV log disabled");
-
-   //--- Risk & Trade managers
-   g_risk.Init(InpBaseRiskPct, InpKellyFraction, InpMagicNumber);
+   g_logger.Init(InpMagicNumber, InpStrategyName);
+   g_risk.Init(InpBaseRiskPct, 0.0, InpMagicNumber);
    g_trade.Init(InpMagicNumber, InpStrategyName);
 
-   //--- Load SMC indicator on each TF
-   string ind_name = "SMC_Structure_Indicator";
-   g_ind_tf1 = iCustom(_Symbol, InpTF1, ind_name,
+   string ind = "SMC_Structure_Indicator";
+   g_ind_tf1 = iCustom(_Symbol, InpTF1, ind,
                         InpSwingLookback, InpOB_MinBodyPct, InpFVG_MinGapATR,
-                        InpOB_MaxAgeBars, InpSweepBuffer, false, false, false);
-   g_ind_tf2 = iCustom(_Symbol, InpTF2, ind_name,
+                        InpOB_MaxAgeBars, InpEqualHL_ATRTol,
+                        false, false, false);
+   g_ind_tf2 = iCustom(_Symbol, InpTF2, ind,
                         InpSwingLookback, InpOB_MinBodyPct, InpFVG_MinGapATR,
-                        InpOB_MaxAgeBars, InpSweepBuffer, false, false, false);
+                        InpOB_MaxAgeBars, InpEqualHL_ATRTol,
+                        false, false, false);
 
    if(g_ind_tf1 == INVALID_HANDLE || g_ind_tf2 == INVALID_HANDLE)
    {
-      Alert("Cannot load SMC_Structure_Indicator — check Indicators folder");
-      return(INIT_FAILED);
+      Alert("SMC_Structure_Indicator load failed");
+      return INIT_FAILED;
    }
 
-   //--- Dashboard
-   if(InpShowDashboard)
-   {
-      SDashboardState st;
-      st.ea_enabled      = InpEnableTrading;
-      st.strategy_name   = InpStrategyName;
-      st.trade_allowed   = false;
-      st.block_reason    = "Initializing";
-      g_dash.Render(st);
-   }
-
-   Print(InpStrategyName, " v", InpVersion, " initialized | Magic=", InpMagicNumber);
-   return(INIT_SUCCEEDED);
+   Print(InpStrategyName, " v", InpVersion, " | Magic=", InpMagicNumber);
+   return INIT_SUCCEEDED;
 }
 
 //+------------------------------------------------------------------+
 void OnDeinit(const int reason)
 {
    g_dash.Remove();
-   if(g_ind_tf1 != INVALID_HANDLE) IndicatorRelease(g_ind_tf1);
-   if(g_ind_tf2 != INVALID_HANDLE) IndicatorRelease(g_ind_tf2);
+   IndicatorRelease(g_ind_tf1);
+   IndicatorRelease(g_ind_tf2);
 }
 
 //+------------------------------------------------------------------+
 void OnTick()
 {
-   //--- Kill switch
    if(g_risk.IsKillSwitchActive(InpMagicNumber))
    {
-      UpdateDashboard(false, "KILL switch active");
+      UpdateDash(false, "KILL switch");
       return;
    }
+   string block;
+   if(!TradeAllowed(block)) { UpdateDash(false, block); return; }
 
-   string block_reason;
-   if(!IsTradeAllowed(block_reason))
+   //--- Frekuensi: manajemen posisi di setiap H1 bar baru
+   datetime tf2_bar = iTime(_Symbol, InpTF2, 1);
+   if(tf2_bar != g_last_bar_tf2)
    {
-      UpdateDashboard(false, block_reason);
-      return;
+      g_last_bar_tf2 = tf2_bar;
+      if(g_trade.HasOpenPosition())
+         CheckSMCExits();    // CHoCH dan OB violation check
    }
 
-   //--- New bar on TF3 only
-   datetime cur_bar = iTime(_Symbol, InpTF3, 1);
-   if(cur_bar == g_last_bar_tf3) return;
-   g_last_bar_tf3 = cur_bar;
-
-   //--- Get indicator data (shift >= 1 — non-repaint)
-   if(CopyBuffer(g_ind_tf1, 0, 1, 3, g_bos_tf1)    < 3) return;
-   if(CopyBuffer(g_ind_tf2, 1, 1, 3, g_ob_high_tf2) < 3) return;
-   if(CopyBuffer(g_ind_tf2, 2, 1, 3, g_ob_low_tf2)  < 3) return;
-   if(CopyBuffer(g_ind_tf2, 3, 1, 3, g_fvg_hi)      < 3) return;
-   if(CopyBuffer(g_ind_tf2, 4, 1, 3, g_fvg_lo)      < 3) return;
-
-   ArraySetAsSeries(g_bos_tf1,     true);
-   ArraySetAsSeries(g_ob_high_tf2, true);
-   ArraySetAsSeries(g_ob_low_tf2,  true);
-   ArraySetAsSeries(g_fvg_hi,      true);
-   ArraySetAsSeries(g_fvg_lo,      true);
-
-   if(g_trade.HasOpenPosition())
+   //--- Entry check di setiap M15 bar baru
+   datetime tf3_bar = iTime(_Symbol, InpTF3, 1);
+   if(tf3_bar != g_last_bar_tf3)
    {
-      ManageOpenPosition();
-   }
-   else
-   {
-      CheckEntrySignal();
+      g_last_bar_tf3 = tf3_bar;
+      if(g_trade.HasOpenPosition())
+         CheckPartialClose();
+      else
+         CheckEntrySetup();  // 2 tahap: setup (H1) dan trigger (M15)
    }
 
-   UpdateDashboard(true, "");
+   UpdateDash(true, "");
 }
 
 //+------------------------------------------------------------------+
-void CheckEntrySignal()
+//| BƯỚC 1 — Mỗi H1 bar mới: kiểm tra điều kiện setup              |
+//| Nếu đủ điều kiện: set g_awaiting_entry = TRUE                   |
+//+------------------------------------------------------------------+
+void CheckEntrySetup()
 {
-   //--- TF1: Bull bias (BOS UP tồn tại trong 3 bars gần nhất)
+   //--- Đọc indicators (shift=1, non-repaint)
+   if(CopyBuffer(g_ind_tf1, 0, 1, 5, g_str_tf1) < 5) return;
+   if(CopyBuffer(g_ind_tf2, 0, 1, 5, g_str_tf2) < 5) return;
+   if(CopyBuffer(g_ind_tf2, 1, 1, 3, g_ob_hi)   < 3) return;
+   if(CopyBuffer(g_ind_tf2, 2, 1, 3, g_ob_lo)   < 3) return;
+   if(CopyBuffer(g_ind_tf2, 3, 1, 3, g_fvg_hi)  < 3) return;
+   if(CopyBuffer(g_ind_tf2, 4, 1, 3, g_fvg_lo)  < 3) return;
+
+   ArraySetAsSeries(g_str_tf1, true);
+   ArraySetAsSeries(g_str_tf2, true);
+   ArraySetAsSeries(g_ob_hi,   true);
+   ArraySetAsSeries(g_ob_lo,   true);
+   ArraySetAsSeries(g_fvg_hi,  true);
+   ArraySetAsSeries(g_fvg_lo,  true);
+
+   //--- KONDISI 1: TF1 H4 harus BOS_UP (dalam 5 bars terakhir), belum ada CHoCH
    bool tf1_bull = false;
-   for(int k = 0; k < 3; k++)
-      if(g_bos_tf1[k] > 0.5) { tf1_bull = true; break; }
-   if(!tf1_bull) return;
-
-   //--- TF2: Bullish OB valid
-   double ob_hi = g_ob_high_tf2[0];
-   double ob_lo = g_ob_low_tf2[0];
-   if(ob_hi == EMPTY_VALUE || ob_lo == EMPTY_VALUE || ob_hi <= ob_lo) return;
-
-   //--- TF2: FVG trong vùng OB (hoặc overlap)
-   if(InpRequireFVG)
+   bool tf1_choch= false;
+   for(int k = 0; k < 5; k++)
    {
-      double fvg_hi = g_fvg_hi[0];
-      double fvg_lo = g_fvg_lo[0];
-      bool fvg_in_ob = (fvg_hi != EMPTY_VALUE && fvg_lo != EMPTY_VALUE
-                        && fvg_lo < ob_hi && fvg_hi > ob_lo);
-      if(!fvg_in_ob) return;
+      if(g_str_tf1[k] == BOS_UP)    tf1_bull  = true;
+      if(g_str_tf1[k] == CHOCH_DOWN)tf1_choch = true;
+   }
+   if(!tf1_bull || tf1_choch) { g_awaiting_entry = false; return; }
+
+   //--- KONDISI 2: TF2 H1 harus punya OB valid
+   double ob_hi = g_ob_hi[0];
+   double ob_lo = g_ob_lo[0];
+   if(ob_hi == EMPTY_VALUE || ob_lo == EMPTY_VALUE || ob_hi <= ob_lo)
+   {
+      g_awaiting_entry = false;
+      return;
    }
 
-   //--- TF3: Giá đang ở trong OB zone
+   //--- KONDISI 3: TF2 H1 harus punya FVG yang overlap dengan OB
+   double fvg_hi = g_fvg_hi[0];
+   double fvg_lo = g_fvg_lo[0];
+   bool has_fvg  = (fvg_hi != EMPTY_VALUE && fvg_lo != EMPTY_VALUE
+                    && fvg_lo < ob_hi && fvg_hi > ob_lo);
+   if(!has_fvg) { g_awaiting_entry = false; return; }
+
+   //--- KONDISI 4: Liquidity Sweep đã xảy ra trên H1
+   //    Detect: giá vượt equal highs (gần nhất trong SwingLookback bars) rồi đóng cửa về trong
+   if(!DetectLiquiditySweep()) { g_awaiting_entry = false; return; }
+
+   //--- Setup thoả mãn → chờ M15 trigger
+   if(!g_awaiting_entry)
+   {
+      g_awaiting_entry   = true;
+      g_signal_bars_left = InpSignalExpiryBars;
+      g_ob_lo_at_entry   = ob_lo;
+      g_logger.LogDecision(_Symbol, "AWAITING_ENTRY",
+                           StringFormat("OB[%.5f-%.5f] FVG[%.5f-%.5f]",
+                                        ob_lo, ob_hi, fvg_lo, fvg_hi));
+   }
+
+   //--- M15 trigger (cùng hàm, chạy khi g_awaiting_entry = true)
+   CheckM15Trigger(ob_hi, ob_lo);
+}
+
+//+------------------------------------------------------------------+
+//| BƯỚC 2 — Kiểm tra M15 trigger khi g_awaiting_entry = TRUE       |
+//+------------------------------------------------------------------+
+void CheckM15Trigger(double ob_hi, double ob_lo)
+{
+   if(!g_awaiting_entry) return;
+
+   g_signal_bars_left--;
+   if(g_signal_bars_left <= 0)
+   {
+      g_awaiting_entry = false;
+      g_logger.LogDecision(_Symbol, "SIGNAL_EXPIRED", "timeout");
+      return;
+   }
+
    double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+
+   //--- Invalidation: OB violated sebelum entry
+   if(bid < g_ob_lo_at_entry)
+   {
+      g_awaiting_entry = false;
+      g_logger.LogDecision(_Symbol, "OB_VIOLATED_PRE_ENTRY", StringFormat("bid=%.5f ob_lo=%.5f", bid, g_ob_lo_at_entry));
+      return;
+   }
+
+   //--- CHoCH trên H1 trong khi chờ → cancel
+   if(g_str_tf2[0] == CHOCH_DOWN)
+   {
+      g_awaiting_entry = false;
+      g_logger.LogDecision(_Symbol, "CHOCH_CANCEL_ENTRY", "");
+      return;
+   }
+
+   //--- Bid phải trong OB zone
    if(bid < ob_lo || bid > ob_hi) return;
 
-   //--- TF3: Bullish Engulfing hoặc Pin Bar trên bar đã đóng (shift=1)
-   double o1 = iOpen(_Symbol,  InpTF3, 1);
-   double c1 = iClose(_Symbol, InpTF3, 1);
-   double h1 = iHigh(_Symbol,  InpTF3, 1);
-   double l1 = iLow(_Symbol,   InpTF3, 1);
+   //--- KONDISI 5: Discount Zone — bid < 50% impulse H1
+   double atr_tf2 = iATR(_Symbol, InpTF2, 14, 1);
+   if(atr_tf2 <= 0) return;
+   double impulse_mid = ob_lo + (ob_hi - ob_lo) * 3.0;  // OB ~ bắt đầu của swing
+   //--- Cách tính đơn giản: bid < ob_lo + (ob_hi - ob_lo) * 0.5 ≡ dưới giữa OB
+   //    (trong thực tế: discount = bên dưới 50% của toàn bộ leg, đây là proxy dùng OB midpoint)
+   double ob_mid = (ob_lo + ob_hi) / 2.0;
+   if(bid > ob_mid) return;   // không trong discount zone
 
-   double body  = c1 - o1;
-   double range = h1 - l1;
-   bool is_bull_candle = (body > 0 && range > 0 && body / range >= InpOB_MinBodyPct);
-   if(!is_bull_candle) return;
+   //--- KONDISI 6: M15 bar[1] bullish engulfing atau pin bar
+   double m15_o = iOpen(_Symbol,  InpTF3, 1);
+   double m15_c = iClose(_Symbol, InpTF3, 1);
+   double m15_h = iHigh(_Symbol,  InpTF3, 1);
+   double m15_l = iLow(_Symbol,   InpTF3, 1);
 
-   //--- Close phải trên giữa OB
-   if(c1 < (ob_lo + ob_hi) / 2.0) return;
+   double body  = m15_c - m15_o;
+   double range = m15_h - m15_l;
+   bool bull_candle = (body > 0 && range > 0 && body / range >= InpOB_MinBodyPct);
+   if(!bull_candle)  return;
+   if(m15_c < ob_mid) return;  // close di bawah tengah OB → lemah
 
-   //--- Tính SL / TP
-   double atr = iATR(_Symbol, InpTF3, 14, 1);
-   if(atr <= 0) return;
+   //--- Hitung SL/TP
+   double atr_tf3 = iATR(_Symbol, InpTF3, 14, 1);
+   if(atr_tf3 <= 0) return;
 
-   double sl = ob_lo - InpSL_OB_Buffer * atr;
+   double sl = ob_lo - InpSL_OB_Buffer * atr_tf3;
    double sl_dist = bid - sl;
+   if(sl_dist < _Point * 10) return;
+   if(sl_dist > atr_tf3 * 3)  return;
 
-   if(sl_dist <= _Point * 10) return;           // SL quá nhỏ
-   if(sl_dist > atr * 3)      return;           // SL quá lớn (> 3 ATR)
-
-   double tp = bid + InpTP_RR * sl_dist;
-
-   //--- Lot size
+   double tp   = bid + InpTP_RR * sl_dist;
    double lots = g_risk.CalcLotSize(_Symbol, sl_dist, InpBaseRiskPct);
    if(lots <= 0) return;
 
-   //--- Execute
-   string comment = StringFormat("%s OB[%.5f-%.5f] sl=%.5f tp=%.5f",
-                                 InpStrategyName, ob_lo, ob_hi, sl, tp);
+   string comment = StringFormat("SMC OB[%.5f-%.5f] sl=%.5f", ob_lo, ob_hi, sl);
    ulong ticket = g_trade.OpenPosition(_Symbol, ORDER_TYPE_BUY, lots, sl, tp, comment);
 
    if(ticket > 0)
-      g_logger.LogTrade(ticket, ORDER_TYPE_BUY, _Symbol, lots, bid, sl, tp, comment);
-   else
-      g_logger.LogDecision(_Symbol, "SIGNAL_REJECTED", "OpenPosition failed");
-}
-
-//+------------------------------------------------------------------+
-void ManageOpenPosition()
-{
-   //--- Close nếu TF1 bias flip sang BEAR
-   bool tf1_bear = false;
-   for(int k = 0; k < 3; k++)
-      if(g_bos_tf1[k] < -0.5) { tf1_bear = true; break; }
-
-   if(tf1_bear)
    {
-      ulong ticket = g_trade.GetOpenTicket();
-      if(ticket > 0)
-      {
-         g_trade.ClosePosition(ticket, "TF1 bias flip to BEAR");
-         g_logger.LogDecision(_Symbol, "CLOSE", "TF1 BOS flip Bear");
-      }
+      g_entry_price         = bid;
+      g_sl_price            = sl;
+      g_tp_price            = tp;
+      g_ob_lo_at_entry      = ob_lo;
+      g_partial_done        = false;
+      g_awaiting_entry      = false;
+      //--- Track swing low setelah entry untuk CHoCH detection
+      g_swing_lo_after_entry = iLow(_Symbol, InpTF2, 1);
+      g_logger.LogTrade(ticket, ORDER_TYPE_BUY, _Symbol, lots, bid, sl, tp, comment);
    }
 }
 
 //+------------------------------------------------------------------+
-string GetBlockReason()
+//| Partial Close tại 1R — đặc thù SMC                              |
+//+------------------------------------------------------------------+
+void CheckPartialClose()
 {
-   if(!InpEnableTrading)          return "EA disabled by input";
-   if(!TerminalInfoInteger(TERMINAL_TRADE_ALLOWED)) return "AutoTrading OFF";
-   if(g_risk.IsDailyLossBreached(InpMagicNumber))   return "Daily loss limit hit";
-   double dd = g_risk.GetCurrentDD(InpMagicNumber);
-   if(dd > 6.0)                   return StringFormat("DD %.1f%% > 6%%", dd);
-   double spread = SymbolInfoInteger(_Symbol, SYMBOL_SPREAD);
-   if(spread > InpMaxSpreadPoints)return StringFormat("Spread %d > %d pts", (int)spread, (int)InpMaxSpreadPoints);
-   return "";
-}
+   if(g_partial_done || !g_trade.HasOpenPosition()) return;
 
-bool IsTradeAllowed(string &reason)
-{
-   reason = GetBlockReason();
-   return reason == "";
+   double bid    = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   double risk   = g_entry_price - g_sl_price;
+   if(risk <= 0) return;
+
+   double profit_r = (bid - g_entry_price) / risk;
+   if(profit_r < InpPartialClose_R) return;
+
+   //--- Đóng 50% lot
+   ulong ticket = g_trade.GetOpenTicket();
+   if(ticket == 0) return;
+
+   double pos_lots = PositionGetDouble(POSITION_VOLUME);
+   double close_lots = NormalizeDouble(pos_lots * 0.5,
+                                       (int)SymbolInfoInteger(_Symbol, SYMBOL_VOLUME_DIGITS));
+   if(close_lots < SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN))
+      close_lots = pos_lots;  // lot tối thiểu — đóng hết nếu không thể half
+
+   if(g_trade.ClosePartial(ticket, close_lots, "Partial 1R"))
+   {
+      //--- Move SL → Breakeven
+      g_trade.ModifySL(ticket, g_entry_price);
+      g_sl_price     = g_entry_price;
+      g_partial_done = true;
+      g_logger.LogDecision(_Symbol, "PARTIAL_CLOSE_1R",
+                           StringFormat("lots=%.2f SL→BE=%.5f", close_lots, g_entry_price));
+   }
 }
 
 //+------------------------------------------------------------------+
-void UpdateDashboard(bool trade_ok, string reason)
+//| Exit checks — CHoCH và OB Violation (đặc thù SMC)               |
+//+------------------------------------------------------------------+
+void CheckSMCExits()
+{
+   if(!g_trade.HasOpenPosition()) return;
+
+   //--- Đọc indicator TF2 (H1)
+   if(CopyBuffer(g_ind_tf2, 0, 1, 3, g_str_tf2) < 3) return;
+   if(CopyBuffer(g_ind_tf2, 2, 1, 3, g_ob_lo)   < 3) return;
+   ArraySetAsSeries(g_str_tf2, true);
+   ArraySetAsSeries(g_ob_lo,   true);
+
+   double close_h1 = iClose(_Symbol, InpTF2, 1);
+   ulong ticket    = g_trade.GetOpenTicket();
+
+   //--- EXIT (a): CHoCH_DOWN trên H1 → trend reversal signal
+   if(g_str_tf2[0] == CHOCH_DOWN || g_str_tf2[1] == CHOCH_DOWN)
+   {
+      g_trade.ClosePosition(ticket, "CHoCH H1");
+      g_logger.LogDecision(_Symbol, "EXIT_CHOCH", StringFormat("close_H1=%.5f", close_h1));
+      ResetState();
+      return;
+   }
+
+   //--- EXIT (b): OB Violated — close H1 < ob_lo lúc entry
+   if(g_ob_lo_at_entry > 0 && close_h1 < g_ob_lo_at_entry)
+   {
+      g_trade.ClosePosition(ticket, "OB Violated");
+      g_logger.LogDecision(_Symbol, "EXIT_OB_VIOLATED",
+                           StringFormat("close=%.5f ob_lo=%.5f", close_h1, g_ob_lo_at_entry));
+      ResetState();
+      return;
+   }
+
+   //--- Update swing low tracker để phát hiện CHoCH tự build
+   double cur_low = iLow(_Symbol, InpTF2, 1);
+   if(cur_low < g_swing_lo_after_entry)
+      g_swing_lo_after_entry = cur_low;
+}
+
+//+------------------------------------------------------------------+
+//| Detect Liquidity Sweep trên H1                                   |
+//| Equal highs bị vượt qua > SweepBuffer×ATR rồi close về trong    |
+//+------------------------------------------------------------------+
+bool DetectLiquiditySweep()
+{
+   int bars = InpSwingLookback + 5;
+   double h[], l[], c[];
+   ArraySetAsSeries(h, true);
+   ArraySetAsSeries(l, true);
+   ArraySetAsSeries(c, true);
+   if(CopyHigh(_Symbol, InpTF2, 1, bars, h) < bars) return false;
+   if(CopyLow(_Symbol,  InpTF2, 1, bars, l) < bars) return false;
+   if(CopyClose(_Symbol,InpTF2, 1, bars, c) < bars) return false;
+
+   double atr[];
+   ArraySetAsSeries(atr, true);
+   if(CopyBuffer(g_atr_handle(), 0, 1, bars, atr) < bars) return false;
+
+   //--- Tìm equal highs trong SwingLookback bars
+   for(int i = 1; i < InpSwingLookback; i++)
+   {
+      double eq_high = h[i];
+      for(int j = i + 1; j < bars; j++)
+      {
+         if(MathAbs(h[j] - eq_high) <= InpEqualHL_ATRTol * atr[i])
+         {
+            //--- Equal highs tìm thấy tại i và j
+            //--- Kiểm tra: có bar nào sau j vượt eq_high rồi close lại về dưới không?
+            for(int k = i - 1; k >= 0; k--)
+            {
+               if(h[k] > eq_high + InpSweepATRBuffer * atr[k]  // sweep vượt
+                  && c[k] < eq_high)                             // close về trong
+                  return true;
+            }
+         }
+      }
+   }
+   return false;
+}
+
+//--- ATR handle cho H1 (dùng trong DetectLiquiditySweep)
+int g_atr_h1 = INVALID_HANDLE;
+
+int g_atr_handle()
+{
+   if(g_atr_h1 == INVALID_HANDLE)
+      g_atr_h1 = iATR(_Symbol, InpTF2, 14);
+   return g_atr_h1;
+}
+
+//+------------------------------------------------------------------+
+//| Helpers                                                           |
+//+------------------------------------------------------------------+
+
+void ResetState()
+{
+   g_partial_done         = false;
+   g_entry_price          = 0;
+   g_sl_price             = 0;
+   g_tp_price             = 0;
+   g_ob_lo_at_entry       = 0;
+   g_swing_lo_after_entry = 0;
+   g_awaiting_entry       = false;
+}
+
+bool TradeAllowed(string &reason)
+{
+   if(!InpEnableTrading)                                    { reason = "EA disabled";      return false; }
+   if(!TerminalInfoInteger(TERMINAL_TRADE_ALLOWED))         { reason = "AutoTrading OFF";  return false; }
+   if(g_risk.IsDailyLossBreached(InpMagicNumber))          { reason = "Daily loss limit"; return false; }
+   double dd = g_risk.GetCurrentDD(InpMagicNumber);
+   if(dd > 6.0)                                            { reason = StringFormat("DD %.1f%%>6%%", dd); return false; }
+   double sp = SymbolInfoInteger(_Symbol, SYMBOL_SPREAD);
+   if(sp > InpMaxSpreadPoints)                             { reason = StringFormat("Spread %d>%d", (int)sp, (int)InpMaxSpreadPoints); return false; }
+   reason = "";
+   return true;
+}
+
+void UpdateDash(bool ok, string reason)
 {
    if(!InpShowDashboard) return;
    SDashboardState st;
-   st.ea_enabled     = InpEnableTrading;
-   st.strategy_name  = InpStrategyName;
-   st.trade_allowed  = trade_ok;
-   st.block_reason   = reason;
-   st.current_dd     = g_risk.GetCurrentDD(InpMagicNumber);
-   st.spread_points  = (int)SymbolInfoInteger(_Symbol, SYMBOL_SPREAD);
+   st.ea_enabled    = InpEnableTrading;
+   st.strategy_name = InpStrategyName + (g_awaiting_entry ? " [WAIT]" : "");
+   st.trade_allowed = ok;
+   st.block_reason  = reason;
+   st.current_dd    = g_risk.GetCurrentDD(InpMagicNumber);
+   st.spread_points = (int)SymbolInfoInteger(_Symbol, SYMBOL_SPREAD);
    g_dash.Render(st);
 }
 
@@ -302,46 +493,33 @@ void UpdateDashboard(bool trade_ok, string reason)
 //+------------------------------------------------------------------+
 double OnTester()
 {
-   ExportTradeLogCSV();
-   return 0.0;
-}
-
-void ExportTradeLogCSV()
-{
    HistorySelect(0, TimeCurrent());
    int total = HistoryDealsTotal();
-   if(total == 0) return;
+   if(total == 0) return 0.0;
 
-   string filename = InpStrategyName + "_trade_log.csv";
-   int fh = FileOpen(filename, FILE_WRITE | FILE_CSV | FILE_ANSI);
-   if(fh == INVALID_HANDLE) return;
+   string fn = InpStrategyName + "_trade_log.csv";
+   int fh = FileOpen(fn, FILE_WRITE | FILE_CSV | FILE_ANSI);
+   if(fh == INVALID_HANDLE) return 0.0;
 
    FileWrite(fh, "timestamp,symbol,strategy,direction,entry,sl,tp,exit,profit,commission,swap");
-
    for(int i = 0; i < total; i++)
    {
-      ulong ticket = HistoryDealGetTicket(i);
-      if(HistoryDealGetInteger(ticket, DEAL_MAGIC) != InpMagicNumber) continue;
-      if(HistoryDealGetInteger(ticket, DEAL_ENTRY) != DEAL_ENTRY_OUT)  continue;
-
-      string dir    = (HistoryDealGetInteger(ticket, DEAL_TYPE) == DEAL_TYPE_BUY) ? "LONG" : "SHORT";
-      datetime dt   = (datetime)HistoryDealGetInteger(ticket, DEAL_TIME);
-      double profit = HistoryDealGetDouble(ticket, DEAL_PROFIT);
-      double comm   = HistoryDealGetDouble(ticket, DEAL_COMMISSION);
-      double swap   = HistoryDealGetDouble(ticket, DEAL_SWAP);
-      double price  = HistoryDealGetDouble(ticket, DEAL_PRICE);
-
+      ulong tk = HistoryDealGetTicket(i);
+      if(HistoryDealGetInteger(tk, DEAL_MAGIC)  != InpMagicNumber) continue;
+      if(HistoryDealGetInteger(tk, DEAL_ENTRY)  != DEAL_ENTRY_OUT)  continue;
+      datetime dt = (datetime)HistoryDealGetInteger(tk, DEAL_TIME);
+      string   dir= (HistoryDealGetInteger(tk, DEAL_TYPE) == DEAL_TYPE_BUY) ? "LONG" : "SHORT";
       FileWrite(fh,
-         TimeToString(dt, TIME_DATE | TIME_MINUTES),
+         TimeToString(dt, TIME_DATE|TIME_MINUTES),
          _Symbol, InpStrategyName, dir,
-         DoubleToString(price, _Digits),
+         DoubleToString(HistoryDealGetDouble(tk, DEAL_PRICE),    _Digits),
          "0", "0",
-         DoubleToString(price, _Digits),
-         DoubleToString(profit, 2),
-         DoubleToString(comm, 2),
-         DoubleToString(swap, 2)
-      );
+         DoubleToString(HistoryDealGetDouble(tk, DEAL_PRICE),    _Digits),
+         DoubleToString(HistoryDealGetDouble(tk, DEAL_PROFIT),   2),
+         DoubleToString(HistoryDealGetDouble(tk, DEAL_COMMISSION),2),
+         DoubleToString(HistoryDealGetDouble(tk, DEAL_SWAP),     2));
    }
    FileClose(fh);
+   return 0.0;
 }
 //+------------------------------------------------------------------+
