@@ -36,3 +36,6 @@ Thumbs.db
 # Secrets / credentials
 configs/mt5_paths_local.yaml
 *.password
+*username-password*
+*.txt.secret
+.env*
