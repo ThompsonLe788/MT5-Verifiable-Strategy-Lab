@@ -1,0 +1,58 @@
+# ea_params.yaml — Wyckoff Breakout
+
+strategy:
+  name: "WyckoffBreakout"
+  version: "1.0"
+  magic_base: 20260501
+  magic_offset: 100       # magic = 20260501 + 100 + symbol_suffix
+
+timeframes:
+  tf1: "H4"
+  tf2: "H1"
+  tf3: "M15"
+
+symbols_allowed:
+  - XAUUSD
+  - EURUSD
+  - GBPUSD
+
+risk:
+  risk_per_trade_pct:    0.25
+  max_daily_loss_pct:    3.0
+  max_symbol_exposure_pct: 1.0
+  max_portfolio_risk_pct:  3.0
+
+filters:
+  enable_spread_filter: true
+  max_spread_points:
+    XAUUSD: 300
+    EURUSD: 20
+    GBPUSD: 30
+    default: 50
+  enable_session_filter: true
+  allowed_sessions:
+    - London
+    - NewYork
+  enable_news_filter: true
+  news_no_trade_before_min: 30
+  news_no_trade_after_min:  30
+
+strategy_params:
+  RangeLookback:    20
+  RangeMinATR:      1.0
+  SpringATRBuffer:  0.2
+  EMA_Period:       21
+  PullbackATRTol:   0.3
+  SL_MaxATR:        3.0
+  TP_RR:            2.0
+  SignalExpiryBars: 8
+  UseVolumeFilter:  true
+
+ui:
+  show_dashboard:      true
+  dashboard_font_size: 10
+  dashboard_corner:    "RIGHT_UPPER"
+  auto_setup_chart:    true
+  auto_load_indicators: true
+  hide_grid_on_init:   true
+  enable_chart_shift:  true

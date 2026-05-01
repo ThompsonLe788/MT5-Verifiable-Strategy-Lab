@@ -1,0 +1,75 @@
+# symbols.yaml
+# Universe các symbol được phép trade trong portfolio.
+# Pipeline chỉ xử lý symbol nằm trong danh sách này.
+
+symbols:
+  XAUUSD:
+    description: "Gold vs USD"
+    category: "commodity"
+    magic_suffix: 1           # MagicNumber = base + suffix
+    spread_limit_points: 300
+    session_filter:
+      - "London"
+      - "NewYork"
+    min_lot:  0.01
+    max_lot:  5.0
+    contract_size: 100        # oz
+    backtest_model: 1         # 0=every tick, 1=OHLC M1, 2=open price
+
+  EURUSD:
+    description: "Euro vs USD"
+    category: "major"
+    magic_suffix: 2
+    spread_limit_points: 20
+    session_filter:
+      - "London"
+      - "NewYork"
+    min_lot:  0.01
+    max_lot:  10.0
+    contract_size: 100000
+    backtest_model: 1
+
+  GBPUSD:
+    description: "British Pound vs USD"
+    category: "major"
+    magic_suffix: 3
+    spread_limit_points: 30
+    session_filter:
+      - "London"
+      - "NewYork"
+    min_lot:  0.01
+    max_lot:  10.0
+    contract_size: 100000
+    backtest_model: 1
+
+  USDJPY:
+    description: "USD vs Japanese Yen"
+    category: "major"
+    magic_suffix: 4
+    spread_limit_points: 30
+    session_filter:
+      - "Tokyo"
+      - "London"
+    min_lot:  0.01
+    max_lot:  10.0
+    contract_size: 100000
+    backtest_model: 1
+
+# --- Sessions (UTC) ---
+sessions:
+  Tokyo:
+    start: "00:00"
+    end:   "09:00"
+  London:
+    start: "07:00"
+    end:   "16:00"
+  NewYork:
+    start: "12:00"
+    end:   "21:00"
+  Overlap:
+    start: "12:00"
+    end:   "16:00"
+
+# --- DST note ---
+# Broker time có thể lệch ±1h theo DST. Cấu hình theo broker thực tế.
+broker_timezone_offset_hours: 2    # ví dụ: EET (UTC+2/+3)

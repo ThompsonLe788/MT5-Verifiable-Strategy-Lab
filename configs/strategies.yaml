@@ -1,0 +1,62 @@
+# strategies.yaml
+# Registry các strategy trong portfolio.
+# Mỗi strategy phải có folder strategies/<name>/ với đủ 5 file bắt buộc.
+
+strategies:
+  wyckoff:
+    display_name: "Wyckoff Breakout"
+    folder:       "strategies/wyckoff"
+    status:       "research"       # research | approved | demo | live | paused | rejected
+    symbols:
+      - XAUUSD
+      - EURUSD
+    timeframes:
+      tf1: "H4"
+      tf2: "H1"
+      tf3: "M15"
+    ea_file:        "Experts/PortfolioEA_Wyckoff.ex5"
+    indicator_files:
+      - "Indicators/Wyckoff_Phase_Indicator.ex5"
+    magic_offset: 100             # magic = magic_base + magic_offset + symbol_suffix
+    risk_tier:    "research_demo"
+    notes: "Phase 1 strategy — research in progress"
+
+  smc_ict:
+    display_name: "SMC/ICT Structure"
+    folder:       "strategies/smc_ict"
+    status:       "research"
+    symbols:
+      - EURUSD
+      - GBPUSD
+    timeframes:
+      tf1: "H4"
+      tf2: "H1"
+      tf3: "M15"
+    ea_file:        "Experts/PortfolioEA_SMC.ex5"
+    indicator_files:
+      - "Indicators/SMC_Structure_Indicator.ex5"
+    magic_offset: 200
+    risk_tier:    "research_demo"
+    notes: "Pending rule_spec.md approval"
+
+  mean_reversion:
+    display_name: "Mean Reversion Volatility"
+    folder:       "strategies/mean_reversion"
+    status:       "research"
+    symbols:
+      - EURUSD
+      - USDJPY
+    timeframes:
+      tf1: "D1"
+      tf2: "H4"
+      tf3: "H1"
+    ea_file:        "Experts/PortfolioEA_MeanRev.ex5"
+    indicator_files:
+      - "Indicators/Volatility_Regime_Indicator.ex5"
+    magic_offset: 300
+    risk_tier:    "research_demo"
+    notes: "Pending"
+
+# --- Status lifecycle ---
+# research → approved → demo → live → paused | rejected
+# Không được đổi status lên "demo" hoặc "live" nếu chưa qua QA_GATE.

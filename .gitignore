@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+.env
+*.egg-info/
+
+# Build / compile artifacts
+python/build/logs/
+python/backtest/ini/
+python/backtest/reports/
+
+# MQL5 compiled files (source only in git)
+mql5/**/*.ex5
+mql5/**/*.ex4
+
+# Logs (runtime, not tracked)
+logs/*.csv
+logs/*.log
+logs/*.json
+
+# Optuna / optimization DB
+*.db
+*.sqlite
+
+# IDE
+.vscode/settings.json
+.idea/
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Secrets / credentials
+configs/mt5_paths_local.yaml
+*.password

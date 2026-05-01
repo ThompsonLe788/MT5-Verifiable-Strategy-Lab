@@ -1,0 +1,50 @@
+# optimization.yaml
+# Config cho Optuna optimization pipeline.
+
+optuna:
+  n_trials:       200          # số trial mỗi optimization run
+  n_jobs:         1            # parallel jobs (1 = sequential, an toàn hơn)
+  direction:      "maximize"
+  sampler:        "TPE"        # TPE | CmaEs | Random
+  pruner:         "MedianPruner"
+  timeout_hours:  4            # dừng sau N giờ dù chưa đủ trials
+
+# --- Objective function ---
+objective:
+  name: "sharpe_penalized"
+  # Formula: Sharpe * (1 - dd/max_dd) * log10(max(trade_count, 1))
+  components:
+    - metric: "sharpe"
+      weight: 1.0
+    - metric: "dd_penalty"     # (1 - current_dd / max_allowed_dd)
+      weight: 1.0
+    - metric: "trade_count_log"
+      weight: 0.5
+
+# --- Hard reject trong optimization ---
+reject_trial_if:
+  total_trades_lt:  200
+  profit_factor_lt: 1.15
+  max_dd_gt:        0.15
+  sharpe_lt:        0.5
+  expectancy_lte:   0.0
+
+# --- Walk-forward trong optimization ---
+walk_forward:
+  train_months: 12
+  test_months:  3
+  min_folds:    4
+  oos_degradation_max: 0.50  # OOS metric không được giảm quá 50% so với IS
+
+# --- Stability selection ---
+# Chọn vùng param ổn định, không chọn điểm profit cao nhất
+stability:
+  method: "plateau"
+  plateau_tolerance_pct: 10    # param lân cận ±10% phải cho kết quả tương đương
+  cluster_n: 5                 # top 5 clusters, chọn cluster ổn định nhất
+
+# --- Output ---
+output:
+  best_params_file: "best_params.json"   # relative từ strategies/<name>/
+  report_file:      "optimization_report.md"
+  include_timestamp_in_best_params: true  # để tracking param expiry

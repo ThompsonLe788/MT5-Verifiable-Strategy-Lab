@@ -1,0 +1,71 @@
+# risk.yaml
+# Risk policy toàn hệ thống. Đồng bộ với RISK_POLICY.md.
+# Không được thay đổi file này mà không có human approval.
+
+magic_base: 20260501
+
+# --- Per-trade risk ---
+position_sizing:
+  base_risk_pct:    0.25      # mặc định cho strategy mới / demo
+  max_risk_pct:     1.00      # hard cap tuyệt đối
+  kelly_fraction:   0.25      # fractional Kelly mặc định (0.25–0.5)
+  kelly_max:        0.50      # không vượt quá 0.5 Kelly
+  kelly_min_sample: 100       # số trades tối thiểu để dùng Kelly
+  kelly_preferred_sample: 300
+
+# --- Drawdown guards ---
+drawdown:
+  daily_loss_limit_pct:   3.0    # dừng trade trong ngày khi chạm
+  weekly_loss_warning_pct: 4.0   # warning, không dừng
+  max_account_dd_pct:     6.0    # dừng toàn bộ EA
+  emergency_stop_pct:    10.0    # emergency — manual intervention required
+
+# --- Kelly DD adjustment ---
+# Xem RISK_POLICY.md section 6.4
+kelly_dd_multiplier:
+  - { dd_lt: 2.0,  multiplier: 1.00 }
+  - { dd_lt: 4.0,  multiplier: 0.50 }
+  - { dd_lt: 6.0,  multiplier: 0.25 }
+  - { dd_gte: 6.0, multiplier: 0.00 }   # dừng
+
+# --- Portfolio exposure ---
+exposure:
+  max_risk_per_symbol_pct:     1.0
+  max_portfolio_open_risk_pct: 3.0
+  max_correlated_exposure_pct: 2.0      # cùng chiều currency
+
+# --- SL policy ---
+sl_policy:
+  mandatory: true          # SL bắt buộc trước entry
+  allow_widening: false    # không nới SL sau entry
+  allow_breakeven: true
+  allow_tighten:   true
+  allow_lock_profit: true
+
+# --- OrderSend retry ---
+execution:
+  max_retry:    3
+  retry_delay_ms: 500
+  retry_on:
+    - REQUOTE
+    - PRICE_CHANGED
+    - TRADE_CONTEXT_BUSY
+  hard_fail_on:
+    - INVALID_STOPS
+    - NOT_ENOUGH_MONEY
+    - MARKET_CLOSED
+
+# --- Risk theo trạng thái strategy ---
+strategy_risk_tiers:
+  research_demo:   0.10     # strategy mới, chưa validate
+  stable:          0.50     # strategy đã qua OOS
+  validated_portfolio: 1.00 # portfolio đã validate đầy đủ
+
+# --- Monitoring thresholds (dùng bởi Monitoring Agent) ---
+monitoring:
+  decay_warning_winrate_drop:  0.08   # warning nếu winrate giảm > 8%
+  decay_critical_winrate_drop: 0.15   # critical nếu giảm > 15%
+  decay_warning_pf_drop:       0.25
+  decay_critical_pf:           0.75   # critical nếu PF < 0.75
+  param_expiry_months:         6      # re-optimize sau 6 tháng
+  rolling_window_trades:       50

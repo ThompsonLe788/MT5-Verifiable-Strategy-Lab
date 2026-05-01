@@ -1,0 +1,28 @@
+# mt5_paths.yaml
+# Đường dẫn MT5 trên máy local. Cập nhật theo cài đặt thực tế.
+
+# --- MT5 executables ---
+terminal_exe:    "C:/Program Files/MetaTrader 5/terminal64.exe"
+metaeditor_exe:  "C:/Program Files/MetaTrader 5/metaeditor64.exe"
+
+# --- MT5 data folder (portable hoặc roaming) ---
+# Tìm trong: Help > About > Data folder
+portable_dir: "C:/Users/hungl/AppData/Roaming/MetaQuotes/Terminal/D0E8209F77C8CF37AD8BF550E51FF075"
+
+# --- MQL5 source folders (relative từ portable_dir) ---
+mql5_root:        "MQL5"
+experts_dir:      "MQL5/Experts"
+indicators_dir:   "MQL5/Indicators"
+include_dir:      "MQL5/Include"
+files_dir:        "MQL5/Files"           # EA đọc/ghi file trade_log.csv
+
+# --- MT5 account (demo) ---
+# Để trống nếu dùng account đang đăng nhập trong terminal
+login:    0
+password: ""
+server:   ""
+
+# --- Python output dirs ---
+compile_log_dir:   "python/build/logs"
+tester_ini_dir:    "python/backtest/ini"
+tester_report_dir: "python/backtest/reports"
