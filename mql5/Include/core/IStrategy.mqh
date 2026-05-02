@@ -1,8 +1,9 @@
-//+------------------------------------------------------------------+
+﻿//+------------------------------------------------------------------+
 //| IStrategy.mqh — Strategy interface (abstract base class)        |
 //| Mọi strategy phải implement interface này.                       |
 //+------------------------------------------------------------------+
-#pragma once
+#ifndef ISTRATEGY_MQH
+#define ISTRATEGY_MQH
 
 enum ENUM_SIGNAL_TYPE
 {
@@ -50,3 +51,4 @@ public:
    virtual void            OnDeinit() = 0;
    virtual void            OnTick()   = 0;   // update internal state
 };
+#endif // ISTRATEGY_MQH

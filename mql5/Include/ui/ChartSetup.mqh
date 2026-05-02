@@ -1,7 +1,8 @@
-//+------------------------------------------------------------------+
+﻿//+------------------------------------------------------------------+
 //| ChartSetup.mqh — Auto chart configuration on EA attach          |
 //+------------------------------------------------------------------+
-#pragma once
+#ifndef CHARTSETUP_MQH
+#define CHARTSETUP_MQH
 #include "Theme.mqh"
 
 //+------------------------------------------------------------------+
@@ -60,7 +61,7 @@ public:
    // ------------------------------------------------------------------
    void SetTimeframe(ENUM_TIMEFRAMES tf)
    {
-      ChartSetInteger(m_chartId, CHART_TIMEFRAME, tf);
+      ChartSetSymbolPeriod(m_chartId, ChartSymbol(m_chartId), tf);
    }
 
    // ------------------------------------------------------------------
@@ -83,3 +84,4 @@ public:
       return ok;
    }
 };
+#endif // CHARTSETUP_MQH

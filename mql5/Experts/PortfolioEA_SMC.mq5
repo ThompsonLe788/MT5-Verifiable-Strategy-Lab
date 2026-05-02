@@ -100,10 +100,10 @@ int OnInit()
    if(InpBaseRiskPct <= 0 || InpTP_RR < 1.0)
       return INIT_PARAMETERS_INCORRECT;
 
-   g_chart.Setup(InpTF1, InpTF2, InpTF3);
-   g_logger.Init(InpMagicNumber, InpStrategyName);
-   g_risk.Init(InpBaseRiskPct, 0.0, InpMagicNumber);
-   g_trade.Init(InpMagicNumber, InpStrategyName);
+   g_chart.Init(ChartID());
+   g_logger.Init(_Symbol, InpStrategyName);
+   g_risk.Init(_Symbol, InpMagicNumber, &g_logger, InpBaseRiskPct);
+   g_trade.Init(_Symbol, InpMagicNumber, &g_logger, &g_risk);
 
    string ind = "SMC_Structure_Indicator";
    g_ind_tf1 = iCustom(_Symbol, InpTF1, ind,
@@ -136,7 +136,7 @@ void OnDeinit(const int reason)
 //+------------------------------------------------------------------+
 void OnTick()
 {
-   if(g_risk.IsKillSwitchActive(InpMagicNumber))
+   if(g_risk.IsKillSwitchActive())
    {
       UpdateDash(false, "KILL switch");
       return;
@@ -224,9 +224,9 @@ void CheckEntrySetup()
       g_awaiting_entry   = true;
       g_signal_bars_left = InpSignalExpiryBars;
       g_ob_lo_at_entry   = ob_lo;
-      g_logger.LogDecision(_Symbol, "AWAITING_ENTRY",
-                           StringFormat("OB[%.5f-%.5f] FVG[%.5f-%.5f]",
-                                        ob_lo, ob_hi, fvg_lo, fvg_hi));
+      g_logger.LogDecision("ENTRY_SETUP", "AWAITING_ENTRY",
+                           StringFormat("OB[%.5f-%.5f] FVG[%.5f-%.5f]", ob_lo, ob_hi, fvg_lo, fvg_hi),
+                           g_risk.GetRiskPct(), 0, "", "H4", "H1", "M15");
    }
 
    //--- M15 trigger (cùng hàm, chạy khi g_awaiting_entry = true)
@@ -244,7 +244,7 @@ void CheckM15Trigger(double ob_hi, double ob_lo)
    if(g_signal_bars_left <= 0)
    {
       g_awaiting_entry = false;
-      g_logger.LogDecision(_Symbol, "SIGNAL_EXPIRED", "timeout");
+      g_logger.LogDecision("ENTRY", "SIGNAL_EXPIRED", "timeout", 0, 0, "", "", "", "");
       return;
    }
 
@@ -254,7 +254,7 @@ void CheckM15Trigger(double ob_hi, double ob_lo)
    if(bid < g_ob_lo_at_entry)
    {
       g_awaiting_entry = false;
-      g_logger.LogDecision(_Symbol, "OB_VIOLATED_PRE_ENTRY", StringFormat("bid=%.5f ob_lo=%.5f", bid, g_ob_lo_at_entry));
+      g_logger.LogDecision("ENTRY", "OB_VIOLATED", StringFormat("bid=%.5f ob_lo=%.5f", bid, g_ob_lo_at_entry), 0, 0, "", "", "", "");
       return;
    }
 
@@ -262,7 +262,7 @@ void CheckM15Trigger(double ob_hi, double ob_lo)
    if(g_str_tf2[0] == CHOCH_DOWN)
    {
       g_awaiting_entry = false;
-      g_logger.LogDecision(_Symbol, "CHOCH_CANCEL_ENTRY", "");
+      g_logger.LogDecision("ENTRY", "CHOCH_CANCEL", "", 0, 0, "", "", "", "");
       return;
    }
 
@@ -270,7 +270,7 @@ void CheckM15Trigger(double ob_hi, double ob_lo)
    if(bid < ob_lo || bid > ob_hi) return;
 
    //--- KONDISI 5: Discount Zone — bid < 50% impulse H1
-   double atr_tf2 = iATR(_Symbol, InpTF2, 14, 1);
+   double atr_tf2 = GetATR(g_atr_h1, InpTF2);
    if(atr_tf2 <= 0) return;
    double impulse_mid = ob_lo + (ob_hi - ob_lo) * 3.0;  // OB ~ bắt đầu của swing
    //--- Cách tính đơn giản: bid < ob_lo + (ob_hi - ob_lo) * 0.5 ≡ dưới giữa OB
@@ -291,7 +291,7 @@ void CheckM15Trigger(double ob_hi, double ob_lo)
    if(m15_c < ob_mid) return;  // close di bawah tengah OB → lemah
 
    //--- Hitung SL/TP
-   double atr_tf3 = iATR(_Symbol, InpTF3, 14, 1);
+   double atr_tf3 = GetATR(g_atr_h3, InpTF3);
    if(atr_tf3 <= 0) return;
 
    double sl = ob_lo - InpSL_OB_Buffer * atr_tf3;
@@ -300,23 +300,21 @@ void CheckM15Trigger(double ob_hi, double ob_lo)
    if(sl_dist > atr_tf3 * 3)  return;
 
    double tp   = bid + InpTP_RR * sl_dist;
-   double lots = g_risk.CalcLotSize(_Symbol, sl_dist, InpBaseRiskPct);
+   double lots = g_risk.CalcLotSize(sl_dist);
    if(lots <= 0) return;
 
-   string comment = StringFormat("SMC OB[%.5f-%.5f] sl=%.5f", ob_lo, ob_hi, sl);
-   ulong ticket = g_trade.OpenPosition(_Symbol, ORDER_TYPE_BUY, lots, sl, tp, comment);
-
-   if(ticket > 0)
+   bool ok = g_trade.OpenPosition(ORDER_TYPE_BUY, lots, sl, tp);
+   if(ok)
    {
+      ulong ticket = g_trade.LastTicket;
       g_entry_price         = bid;
       g_sl_price            = sl;
       g_tp_price            = tp;
       g_ob_lo_at_entry      = ob_lo;
       g_partial_done        = false;
       g_awaiting_entry      = false;
-      //--- Track swing low setelah entry untuk CHoCH detection
       g_swing_lo_after_entry = iLow(_Symbol, InpTF2, 1);
-      g_logger.LogTrade(ticket, ORDER_TYPE_BUY, _Symbol, lots, bid, sl, tp, comment);
+      g_logger.LogTrade("LONG", bid, sl, tp, 0, 0, 0, 0, 0, 0);
    }
 }
 
@@ -339,19 +337,19 @@ void CheckPartialClose()
    if(ticket == 0) return;
 
    double pos_lots = PositionGetDouble(POSITION_VOLUME);
-   double close_lots = NormalizeDouble(pos_lots * 0.5,
-                                       (int)SymbolInfoInteger(_Symbol, SYMBOL_VOLUME_DIGITS));
+   int vol_digits = (int)MathRound(-MathLog10(SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP)));
+   double close_lots = NormalizeDouble(pos_lots * 0.5, vol_digits);
    if(close_lots < SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN))
-      close_lots = pos_lots;  // lot tối thiểu — đóng hết nếu không thể half
+      close_lots = pos_lots;
 
-   if(g_trade.ClosePartial(ticket, close_lots, "Partial 1R"))
+   if(g_trade.ClosePartial(ticket, close_lots))
    {
-      //--- Move SL → Breakeven
       g_trade.ModifySL(ticket, g_entry_price);
       g_sl_price     = g_entry_price;
       g_partial_done = true;
-      g_logger.LogDecision(_Symbol, "PARTIAL_CLOSE_1R",
-                           StringFormat("lots=%.2f SL→BE=%.5f", close_lots, g_entry_price));
+      g_logger.LogDecision("POSITION", "PARTIAL_CLOSE_1R",
+                           StringFormat("lots=%.2f SL→BE=%.5f", close_lots, g_entry_price),
+                           g_risk.GetRiskPct(), 0, "", "", "", "");
    }
 }
 
@@ -374,8 +372,8 @@ void CheckSMCExits()
    //--- EXIT (a): CHoCH_DOWN trên H1 → trend reversal signal
    if(g_str_tf2[0] == CHOCH_DOWN || g_str_tf2[1] == CHOCH_DOWN)
    {
-      g_trade.ClosePosition(ticket, "CHoCH H1");
-      g_logger.LogDecision(_Symbol, "EXIT_CHOCH", StringFormat("close_H1=%.5f", close_h1));
+      g_trade.ClosePosition(ticket);
+      g_logger.LogDecision("EXIT", "CHOCH", StringFormat("close_H1=%.5f", close_h1), 0, 0, "", "", "", "");
       ResetState();
       return;
    }
@@ -383,9 +381,9 @@ void CheckSMCExits()
    //--- EXIT (b): OB Violated — close H1 < ob_lo lúc entry
    if(g_ob_lo_at_entry > 0 && close_h1 < g_ob_lo_at_entry)
    {
-      g_trade.ClosePosition(ticket, "OB Violated");
-      g_logger.LogDecision(_Symbol, "EXIT_OB_VIOLATED",
-                           StringFormat("close=%.5f ob_lo=%.5f", close_h1, g_ob_lo_at_entry));
+      g_trade.ClosePosition(ticket);
+      g_logger.LogDecision("EXIT", "OB_VIOLATED",
+                           StringFormat("close=%.5f ob_lo=%.5f", close_h1, g_ob_lo_at_entry), 0, 0, "", "", "", "");
       ResetState();
       return;
    }
@@ -437,14 +435,24 @@ bool DetectLiquiditySweep()
    return false;
 }
 
-//--- ATR handle cho H1 (dùng trong DetectLiquiditySweep)
-int g_atr_h1 = INVALID_HANDLE;
+//--- ATR handles (lazy-init)
+int g_atr_h1 = INVALID_HANDLE;   // TF2 = H1
+int g_atr_h3 = INVALID_HANDLE;   // TF3 = M15
 
 int g_atr_handle()
 {
    if(g_atr_h1 == INVALID_HANDLE)
       g_atr_h1 = iATR(_Symbol, InpTF2, 14);
    return g_atr_h1;
+}
+
+double GetATR(int &handle, ENUM_TIMEFRAMES tf)
+{
+   if(handle == INVALID_HANDLE)
+      handle = iATR(_Symbol, tf, 14);
+   double buf[1];
+   if(CopyBuffer(handle, 0, 1, 1, buf) < 1) return 0;
+   return buf[0];
 }
 
 //+------------------------------------------------------------------+
@@ -466,8 +474,8 @@ bool TradeAllowed(string &reason)
 {
    if(!InpEnableTrading)                                    { reason = "EA disabled";      return false; }
    if(!TerminalInfoInteger(TERMINAL_TRADE_ALLOWED))         { reason = "AutoTrading OFF";  return false; }
-   if(g_risk.IsDailyLossBreached(InpMagicNumber))          { reason = "Daily loss limit"; return false; }
-   double dd = g_risk.GetCurrentDD(InpMagicNumber);
+   if(g_risk.IsDailyLossBreached())          { reason = "Daily loss limit"; return false; }
+   double dd = g_risk.GetCurrentDD();
    if(dd > 6.0)                                            { reason = StringFormat("DD %.1f%%>6%%", dd); return false; }
    double sp = SymbolInfoInteger(_Symbol, SYMBOL_SPREAD);
    if(sp > InpMaxSpreadPoints)                             { reason = StringFormat("Spread %d>%d", (int)sp, (int)InpMaxSpreadPoints); return false; }
@@ -479,12 +487,12 @@ void UpdateDash(bool ok, string reason)
 {
    if(!InpShowDashboard) return;
    SDashboardState st;
-   st.ea_enabled    = InpEnableTrading;
-   st.strategy_name = InpStrategyName + (g_awaiting_entry ? " [WAIT]" : "");
-   st.trade_allowed = ok;
-   st.block_reason  = reason;
-   st.current_dd    = g_risk.GetCurrentDD(InpMagicNumber);
-   st.spread_points = (int)SymbolInfoInteger(_Symbol, SYMBOL_SPREAD);
+   st.eaOn          = InpEnableTrading;
+   st.strategy      = InpStrategyName + (g_awaiting_entry ? " [WAIT]" : "");
+   st.tradingAllowed= ok;
+   st.blockedReason = reason;
+   st.ddPct         = g_risk.GetCurrentDD();
+   st.spreadPoints  = (int)SymbolInfoInteger(_Symbol, SYMBOL_SPREAD);
    g_dash.Render(st);
 }
 

@@ -1,7 +1,8 @@
-//+------------------------------------------------------------------+
+﻿//+------------------------------------------------------------------+
 //| TradeManager.mqh — Order execution with SL mandatory policy     |
 //+------------------------------------------------------------------+
-#pragma once
+#ifndef TRADEMANAGER_MQH
+#define TRADEMANAGER_MQH
 #include "Logger.mqh"
 #include "RiskManager.mqh"
 
@@ -167,6 +168,36 @@ public:
    }
 
    // ------------------------------------------------------------------
+   // Close partial volume
+   // ------------------------------------------------------------------
+   bool ClosePartial(ulong ticket, double lots)
+   {
+      if(!PositionSelectByTicket(ticket)) return false;
+      ENUM_POSITION_TYPE posType = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
+      MqlTradeRequest req = {};
+      MqlTradeResult  res = {};
+      req.action   = TRADE_ACTION_DEAL;
+      req.symbol   = m_symbol;
+      req.volume   = lots;
+      req.type     = (posType == POSITION_TYPE_BUY) ? ORDER_TYPE_SELL : ORDER_TYPE_BUY;
+      req.price    = (posType == POSITION_TYPE_BUY)
+                   ? SymbolInfoDouble(m_symbol, SYMBOL_BID)
+                   : SymbolInfoDouble(m_symbol, SYMBOL_ASK);
+      req.position = ticket;
+      req.magic    = m_magic;
+      req.deviation= 10;
+      req.type_filling = ORDER_FILLING_IOC;
+      bool sent = OrderSend(req, res);
+      if(sent && res.retcode == TRADE_RETCODE_DONE)
+      {
+         m_logger.Info(StringFormat("Partial close: ticket=%d lots=%.2f", ticket, lots));
+         return true;
+      }
+      m_logger.LogError("ClosePartial", res.retcode);
+      return false;
+   }
+
+   // ------------------------------------------------------------------
    // Move SL (only to breakeven or tighter — never widen)
    // ------------------------------------------------------------------
    bool ModifySL(ulong ticket, double newSL)
@@ -221,3 +252,4 @@ public:
       return 0;
    }
 };
+#endif // TRADEMANAGER_MQH

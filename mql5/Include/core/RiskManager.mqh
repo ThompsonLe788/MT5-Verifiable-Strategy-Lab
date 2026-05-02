@@ -1,7 +1,8 @@
-//+------------------------------------------------------------------+
+﻿//+------------------------------------------------------------------+
 //| RiskManager.mqh — Position sizing + Kelly + guard conditions    |
 //+------------------------------------------------------------------+
-#pragma once
+#ifndef RISKMANAGER_MQH
+#define RISKMANAGER_MQH
 #include "Logger.mqh"
 
 //--- Global Variables prefix for portfolio state
@@ -217,3 +218,4 @@ public:
    bool     IsKellyValid()     { return m_kellyValid; }
    int      GetKellySample()   { return m_kellySample; }
 };
+#endif // RISKMANAGER_MQH

@@ -1,7 +1,8 @@
-//+------------------------------------------------------------------+
+﻿//+------------------------------------------------------------------+
 //| Theme.mqh — Color palette and font constants                    |
 //+------------------------------------------------------------------+
-#pragma once
+#ifndef THEME_MQH
+#define THEME_MQH
 
 //--- Dashboard colors
 #define CLR_OK        clrLimeGreen
@@ -32,3 +33,4 @@
 #define DASH_Y_OFFSET  20
 #define DASH_LINE_H    16
 #define DASH_WIDTH     220
+#endif // THEME_MQH

@@ -227,7 +227,7 @@ int OnCalculate(const int      rates_total,
             {
                fvg_high = gap_hi;
                fvg_low  = gap_lo;
-               DrawFVGZone(time[i + 2], time[i], fvg_lo, fvg_hi, i);
+               DrawFVGZone(time[i + 2], time[i], fvg_low, fvg_high, i);
             }
          }
       }

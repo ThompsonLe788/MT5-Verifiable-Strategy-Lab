@@ -1,7 +1,8 @@
-//+------------------------------------------------------------------+
+﻿//+------------------------------------------------------------------+
 //| AlertManager.mqh — Throttled alerts, 3-level severity           |
 //+------------------------------------------------------------------+
-#pragma once
+#ifndef ALERTMANAGER_MQH
+#define ALERTMANAGER_MQH
 
 enum ENUM_ALERT_LEVEL { ALERT_WARNING=0, ALERT_RISK=1, ALERT_CRITICAL=2 };
 
@@ -82,3 +83,4 @@ public:
       if(idx >= 0) m_records[idx].lastSent = 0;
    }
 };
+#endif // ALERTMANAGER_MQH

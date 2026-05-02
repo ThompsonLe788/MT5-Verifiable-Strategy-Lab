@@ -1,7 +1,8 @@
-//+------------------------------------------------------------------+
+﻿//+------------------------------------------------------------------+
 //| Logger.mqh — Centralized logging to CSV files                   |
 //+------------------------------------------------------------------+
-#pragma once
+#ifndef LOGGER_MQH
+#define LOGGER_MQH
 
 //--- Log levels
 enum ENUM_LOG_LEVEL { LOG_DEBUG=0, LOG_INFO=1, LOG_WARNING=2, LOG_ERROR=3 };
@@ -102,3 +103,4 @@ public:
    void Warning(const string msg) { Print("[WARN]  [", m_strategy, "] ", msg); }
    void Error  (const string msg) { Print("[ERROR] [", m_strategy, "] ", msg); }
 };
+#endif // LOGGER_MQH
