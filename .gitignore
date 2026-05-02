@@ -29,6 +29,9 @@ logs/*.json
 .vscode/settings.json
 .idea/
 
+# MCP credentials
+.mcp.json
+
 # OS
 Thumbs.db
 .DS_Store
